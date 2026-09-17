@@ -85,7 +85,7 @@ DATABASES = {
         "ENGINE": "django.db.backends.postgresql",
         "OPTIONS": {
             "service": "img_downloader",
-            "passfile": ".my_pgpass",
+            "passfile": str(Path.home() / ".my_pgpass"),
         },
     }
 }
