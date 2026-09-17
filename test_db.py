@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-"""Test that Django can connect to the database configured in setting.py."""
+"""Test that Django can connect to the database configured in settings.py."""
 import os
 import sys
 
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "setting")
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "settings")
 
 # Raw connectivity check only, so we skip django.setup() (avoids needing INSTALLED_APPS to be importable).
 from django.db import connection

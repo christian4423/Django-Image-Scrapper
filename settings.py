@@ -54,6 +54,8 @@ DATABASES = {
     }
 }
 
+MEDIA_URL = "media/"
+MEDIA_ROOT = BASE_DIR / "media"
 AUTH_PASSWORD_VALIDATORS = []
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"
