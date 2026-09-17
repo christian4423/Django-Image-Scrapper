@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Virtual environment
+.venv/
+
+# Django
+*.log
+db.sqlite3
+media/
+staticfiles/
+
+# Local secrets (should live in ~/, but ignore if ever created in-repo)
+.env
+.my_pgpass
+.pg_service.conf
+
+# OS
+.DS_Store
