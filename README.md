@@ -1,6 +1,6 @@
-# Software Engineer Interview Task
+# Software Developer Interview Task
 
-Hello,
+Hello Christian,
 
 I hope you’re doing well and we’re looking forward to talking with you next week.
 
@@ -38,4 +38,5 @@ AI use is acceptable for this exercise. Regardless of its use, it is important t
 ## Getting started
 
 1. Open a terminal
-2. Navigate to a directory in which you’d like to store your work and checkout the project with `git clone`.
+2. Navigate to a directory in which you’d like to store your work and checkout the project with the line below.
+3. git clone https://github.com/academic-innovation/christian-matsoukis-developer-interview.git
