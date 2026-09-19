@@ -1,4 +1,5 @@
 from django.contrib import admin
+from django.template.backends import django
 from django.utils.html import format_html
 from .models import Search, ImageAsset, SearchImage
 
@@ -11,7 +12,7 @@ class SearchImageInline(admin.TabularInline):
     model = SearchImage
     extra = 0  # Prevents empty placeholder rows from cluttering the UI
     raw_id_fields = ("asset",)  # Highly recommended: prevents a dropdown from loading thousands of assets
-    fields = ("position", "asset_thumbnail", "source_url")
+    fields = ("position", "asset_thumbnail", "source_url", "asset")
     readonly_fields = ("asset_thumbnail",)
 
     @admin.display(description="Preview")
@@ -36,6 +37,7 @@ class SearchAdmin(admin.ModelAdmin):
     inlines = [SearchImageInline]
 
 
+
 @admin.register(ImageAsset)
 class ImageAssetAdmin(admin.ModelAdmin):
     """
@@ -46,6 +48,8 @@ class ImageAssetAdmin(admin.ModelAdmin):
     search_fields = ("sha256",)
     readonly_fields = ("thumb",)
 
+    format_html = format_html
+
     @admin.display(description="SHA256")
     def sha256_short(self, obj):
         return f"{obj.sha256[:8]}..."
@@ -54,6 +58,11 @@ class ImageAssetAdmin(admin.ModelAdmin):
     def byte_size_kb(self, obj):
         return f"{obj.byte_size / 1024:.1f} KB"
 
+    # override get_queryset to prefetch related appearances for performance
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return qs.prefetch_related("appearances")
+    
     @admin.display(description="Appearances")
     def appearance_count(self, obj):
         """Leverages the related_name='appearances' to show cross-search popularity."""
@@ -72,5 +81,5 @@ class SearchImageAdmin(admin.ModelAdmin):
     Registered independently so you can audit the global stream of raw join records 
     outside of the individual search view context if needed.
     """
-    list_display = ("id", "search_id", "asset_id", "position", "source_url")
+    list_display = ("search", "asset")
     raw_id_fields = ("search", "asset")

@@ -1,4 +1,5 @@
 import os
+from django.contrib.admin import TabularInline
 from django.db import models
 from django.db.models import UniqueConstraint
 
@@ -7,7 +8,7 @@ class Search(models.Model):
         PENDING = 'PENDING', 'Pending'
         COMPLETE = 'COMPLETE', 'Complete'
         FAILED = 'FAILED', 'Failed'
-
+        
     url = models.URLField(max_length=2000)
     page_title = models.CharField(max_length=255, blank=True)
     status = models.CharField(
