@@ -1,0 +1,43 @@
+{% extends "img_downloader/base.html" %}
+{% block title %}
+    {{ block.super }} - Home
+{% endblock %}
+
+{% block content %}
+<h2>Welcome to the Image Downloader</h2>
+<p>Use the form below to search for images.</p>
+<form action="{% url 'img_downloader:create' %}" method="post">
+    {% csrf_token %}
+    {{form.url.label_tag}} 
+    {{form.url}}
+    <input type="submit" value="Search">
+    <br>
+    {{form.url.errors}}
+</form>
+
+<hr>
+<h2>Recent Searches</h2>
+{% if recent_searches %}
+    <table>
+        <tr>
+            <th>Title</th>
+            <th>Status</th>
+            <th>Date</th>
+            <th>Stored</th>
+            <th>Actions</th>
+        </tr>
+        {% for search in recent_searches %}
+        <tr>
+            <td>{{ search.page_title|truncatechars:50 }}</td>
+            <td>{{ search.status }}</td>
+            <td>{{ search.created_at|date:"M j, Y" }}</td>
+            <td>{{ search.stored_count }}</td>
+            <td><a href="{% url 'img_downloader:detail' search.pk %}">View</a></td>
+        </tr>
+        {% endfor %}
+    </table>
+{% else %}
+    <p>No recent searches available.</p>
+{% endif %}
+
+{% endblock %}

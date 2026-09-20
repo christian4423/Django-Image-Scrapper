@@ -1,0 +1,20 @@
+{% extends "img_downloader/base.html" %}
+{% block title %}
+    {{ block.super }} - Details
+{% endblock %}
+
+{% block content %}
+<h2>Search Details</h2>
+<p>Title: {{ search.page_title }}</p>
+<p>Status: {{ search.status }}</p>
+<p>Date: {{ search.created_at|date:"M j, Y" }}</p>
+<p>Stored: {{ search.stored_count }}</p>
+{% if search.stored_count > 0 %}
+    <p>Images are available for this search.</p>
+    {% for image in search.image_asset %}
+        <img src="{{ image.url }}">
+    {% endfor %}
+{% endif %}
+
+<p><a href="{% url 'img_downloader:index' %}">Back to Home</a></p>
+{% endblock %}
