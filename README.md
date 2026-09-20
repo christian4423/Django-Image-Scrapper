@@ -113,6 +113,25 @@ uv pip install Django, psycopg
 
 ***
 
+# Running the tests
+
+```
+python manage.py test
+```
+
+43 tests, about half a second, and no network access — `img_downloader/tests/fakes.py`
+stands in for the internet, so a 404, a redirect loop, a link-local address or a
+dropped connection are all reproducible rather than dependent on some real site
+behaving that way today.
+
+The `fetching` tests need no database and run as `SimpleTestCase`. The `ingest`
+tests drive the real `fetch_page` and `download_image` over that fake network
+instead of stubbing them, so the seam between the two modules is covered: a 404
+on one image has to travel from `requests`, through error translation, to a
+skipped image on a search that still completes.
+
+***
+
 # Ideas for Further Development
 
 Known limitations and where I would take the application next.
