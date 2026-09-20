@@ -188,17 +188,21 @@ def _reject_unsafe_url(parsed_url: ParseResult) -> None:
     if not hostname:
         raise FetchingError(f"Invalid URL: {parsed_url.geturl()}")
 
+    # A hostname can resolve to several addresses. Every one of them has to be
+    # public, or a private address could hide behind a public one.
+    for address in _resolve(hostname):
+        ip_address = ipaddress.ip_address(address)
+        if _is_internal(ip_address):
+            raise FetchingError(f"Unsafe IP detected: {ip_address}")
+
+
+def _resolve(hostname: str) -> list[str]:
+    """Every IP address a hostname resolves to."""
     try:
         address_info = socket.getaddrinfo(hostname, None)
     except socket.gaierror:
         raise FetchingError(f"Unable to resolve hostname: {hostname}")
-
-    # A hostname can resolve to several addresses. Every one of them has to be
-    # public, or a private address could hide behind a public one.
-    for entry in address_info:
-        ip_address = ipaddress.ip_address(entry[4][0])
-        if _is_internal(ip_address):
-            raise FetchingError(f"Unsafe IP detected: {ip_address}")
+    return [entry[4][0] for entry in address_info]
 
 
 def _is_internal(ip_address) -> bool:
