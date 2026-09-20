@@ -25,6 +25,13 @@ MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB limit
 MAX_HTML_BYTES = 2 * 1024 * 1024  # 2 MB limit
 MAX_ROBOTS_TXT_BYTES = 500 * 1024  # 500 KB limit for robots.txt
 
+
+"""
+TODO: parsing.py exports only extract_absolute_images. There's no extract_title, so Search.page_title has nothing to fill it. It's a three-liner — soup.title.string, stripped, truncated to max_length=255, empty string when absent.
+"""
+
+
+
 class FetchingError(RuntimeError):
     """Custom exception for fetching errors."""
     pass
