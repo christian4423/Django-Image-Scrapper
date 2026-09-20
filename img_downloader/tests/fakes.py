@@ -34,6 +34,9 @@ class FakeResponse:
         self.encoding = encoding
         self.delay = delay
         self._body = body
+        #: Set once iter_content runs, so a test can prove a rejected response
+        #: was never downloaded.
+        self.body_was_read = False
 
     @property
     def is_redirect(self):
@@ -48,6 +51,7 @@ class FakeResponse:
             raise requests.HTTPError(f"{self.status_code} Client Error")
 
     def iter_content(self, chunk_size):
+        self.body_was_read = True
         for start in range(0, len(self._body), chunk_size):
             yield self._body[start:start + chunk_size]
 

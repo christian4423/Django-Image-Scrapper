@@ -30,6 +30,22 @@ TIMEOUT = (5, 15)
 ALLOWED_SCHEMES = frozenset({"http", "https"})
 MAX_REDIRECTS = 5
 
+# Image types we refuse outright, on the declared type, before the body is
+# transferred.
+#
+# SVG is excluded on purpose. It is an active-content format: an SVG can carry
+# <script>, event handlers like onload, and external references, and a browser
+# executes all of it. Because assets are served back from our own origin,
+# storing one would be stored XSS — a page we ingested could run JavaScript as
+# us, against our own users' sessions. That is a vulnerability, not a missing
+# feature, so supporting SVG would mean sanitising or rasterising it first.
+#
+# Rejecting here rather than at decode time also saves pulling down bytes we
+# were always going to discard. It is not a complete defence by itself — a
+# server can label an SVG image/png — so the Pillow decode in ingest.py stays
+# as the second line.
+REJECTED_IMAGE_TYPES = frozenset({"image/svg+xml", "image/svg"})
+
 # Size ceilings. These are the only thing standing between us and a server
 # that streams bytes forever, so they are enforced while reading, not just
 # from the Content-Length header a server may well be lying about.
@@ -305,9 +321,15 @@ def _image_content_type(response) -> str:
 
     Plenty of servers send images as application/octet-stream, so that is let
     through; Pillow makes the real decision later, when the bytes are decoded.
+    Types in REJECTED_IMAGE_TYPES are refused here, body unread.
     """
     declared = response.headers.get("Content-Type") or "application/octet-stream"
     base_type = declared.split(";", 1)[0].strip().lower()
+
+    if base_type in REJECTED_IMAGE_TYPES:
+        raise FetchingError(f"Refusing active-content image type: {declared}")
+
     if not (base_type.startswith("image/") or base_type == "application/octet-stream"):
         raise FetchingError(f"Unexpected content type for image: {declared}")
+
     return declared

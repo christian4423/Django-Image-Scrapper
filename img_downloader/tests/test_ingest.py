@@ -166,11 +166,32 @@ class PartialFailureTests(IngestTestCase):
         self.assertEqual(self.stored_urls(search), [image_url("ok.png")])
         self.assertEqual(search.images_skipped, 1)
 
-    def test_an_svg_is_skipped_rather_than_stored(self):
-        """Valid to a browser, unreadable to Pillow — the commonest real skip."""
+    def test_an_svg_is_refused_and_counted_as_skipped(self):
+        """
+        SVG is declined at the content-type check, so its body is never
+        downloaded — but it still counts as a skipped image, because the page
+        really did reference an image we are not showing.
+        """
+        svg = FakeResponse(200, {"Content-Type": "image/svg+xml"}, SVG)
+        self.serve_page({image_url("photo.png"): png_response(9), image_url("logo.svg"): svg})
+
+        search = ingest_url(PAGE)
+
+        self.assertEqual(search.status, Search.Status.COMPLETE)
+        self.assertEqual(search.images.count(), 1)
+        self.assertEqual(search.images_skipped, 1)
+        self.assertEqual(ImageAsset.objects.count(), 1)
+        self.assertFalse(svg.body_was_read, "the SVG was downloaded before being rejected")
+
+    def test_an_svg_mislabelled_as_png_is_still_not_stored(self):
+        """
+        The content-type rule is the first line, not the only one. A server can
+        label an SVG image/png, and then Pillow refusing the bytes is what
+        keeps active content out of our storage.
+        """
         self.serve_page({
-            image_url("photo.png"): png_response(9),
-            image_url("logo.svg"): FakeResponse(200, {"Content-Type": "image/svg+xml"}, SVG),
+            image_url("photo.png"): png_response(10),
+            image_url("sneaky.png"): FakeResponse(200, {"Content-Type": "image/png"}, SVG),
         })
 
         search = ingest_url(PAGE)

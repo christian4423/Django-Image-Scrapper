@@ -193,11 +193,21 @@ what `search.images` means to templates already written against it.
 
 ## SVG and other vector formats
 
-On the Wikipedia test page, 7 of 59 images were SVG and all were skipped:
-`ImageField` requires a raster image Pillow can open. Supporting them means
-either a separate model backed by a plain `FileField` — with sanitization,
-since SVG can carry script and would be served from our own origin — or
-rasterizing at ingest with something like `cairosvg`.
+SVG is rejected deliberately, at the content-type check, and that is a security
+decision rather than a gap. SVG is an active-content format — it can carry
+`<script>`, event handlers and external references, all of which a browser
+executes — and assets are served back from our own origin, so storing one would
+be stored XSS: a page we ingested could run JavaScript against our own users'
+sessions. Refusing on the declared type also means the body is never
+downloaded. Because a server can mislabel an SVG as `image/png`, the Pillow
+decode in `ingest.py` is kept as a second line.
+
+On the Wikipedia test page that accounts for 7 of 59 images, which is a real
+cost: those are logos and icons a user would expect to see. Supporting them
+safely means either rasterizing at ingest with something like `cairosvg`, or a
+separate model backed by a plain `FileField` with the SVG sanitized and served
+from a separate origin — not just `FileField` on its own, which would reproduce
+exactly the vulnerability above.
 
 ## Race on asset creation
 

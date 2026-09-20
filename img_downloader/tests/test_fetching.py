@@ -164,6 +164,32 @@ class DownloadImageTests(FakeNetworkMixin, SimpleTestCase):
 
         self.assertEqual(download_image(self.url).content_type, "image/png; charset=binary")
 
+    def test_refuses_svg_without_downloading_it(self):
+        """
+        SVG is active content: served from our origin it would be stored XSS.
+        Refusing on the declared type means the body never comes down.
+        """
+        svg = FakeResponse(200, {"Content-Type": "image/svg+xml"}, b"<svg/>")
+        self.serve({self.url: svg})
+
+        with self.assertRaisesMessage(FetchingError, "Refusing active-content image type"):
+            download_image(self.url)
+
+        self.assertFalse(svg.body_was_read, "the body was downloaded before being rejected")
+
+    def test_refuses_svg_whatever_the_parameters_say(self):
+        self.serve({self.url: FakeResponse(200, {"Content-Type": "IMAGE/SVG+XML; charset=utf-8"}, b"<svg/>")})
+
+        with self.assertRaisesMessage(FetchingError, "Refusing active-content image type"):
+            download_image(self.url)
+
+    def test_still_accepts_ordinary_image_types(self):
+        """The SVG rule must not catch anything else."""
+        for content_type in ("image/png", "image/jpeg", "image/gif", "image/webp"):
+            with self.subTest(content_type=content_type):
+                self.serve({self.url: FakeResponse(200, {"Content-Type": content_type}, png(1))})
+                self.assertEqual(download_image(self.url).content, png(1))
+
     def test_refuses_an_image_past_the_size_limit(self):
         body = b"x" * (fetching.MAX_IMAGE_BYTES + 10)
         self.serve({self.url: FakeResponse(200, {"Content-Type": "image/png"}, body)})
