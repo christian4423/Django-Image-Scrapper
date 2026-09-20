@@ -110,3 +110,92 @@ uv venv
 source .venv/bin/activate
 uv pip install Django, psycopg
 ```
+
+***
+
+# Ideas for Further Development
+
+Known limitations and where I would take the application next.
+
+## Orphaned files from rolled-back ingests
+
+`ImageAsset.file.save()` writes to storage the moment it is called, but it runs
+inside the `transaction.atomic()` block in `ingest_url`. Storage is not
+transactional: when the transaction rolls back, the database row disappears and
+the bytes on disk stay, referenced by nothing. The same asymmetry applies in
+reverse — `ImageAsset.objects.all().delete()` drops rows and leaves every file
+in place.
+
+The usual fix, deferring the write with `transaction.on_commit()`, does not fit
+here. `ImageAsset.file` declares `width_field`/`height_field`, so Django reads
+the image to populate its dimensions *during* the save; the file has to exist
+before the row can be written. Deferring the write would only invert the
+failure — a crash between commit and callback would leave a row with no file,
+which is worse, because the application would then serve a broken image rather
+than waste a few kilobytes of disk.
+
+I would instead treat drift between the two stores as expected and reconcile
+it: a management command that walks `MEDIA_ROOT` and deletes any file with no
+matching `ImageAsset`. Because the path is derived from the content hash, each
+check is one indexed lookup, and the same command cleans up after deletes.
+Run it from cron.
+
+## Politeness limits on outbound requests
+
+Images are downloaded in parallel through a `ThreadPoolExecutor` bounded at
+`MAX_DOWNLOAD_WORKERS`, but that is a global cap, not a per-host one. It behaves
+like a per-host cap in practice, because a page's images almost always come from
+one or two origins — but a page that fans out across many hosts could open eight
+connections to each of them. Keying a semaphore on the hostname would make the
+limit mean what it says.
+
+Relatedly, `robots.txt` is fetched and parsed but only `can_fetch` is consulted.
+`Crawl-delay` is sitting right there in the parsed result and is ignored.
+
+## Moving ingest off the request cycle
+
+Even parallelized, fetching a page and its images is too slow to do inside an
+HTTP request. `Search.Status` is already shaped for the alternative: `PENDING`
+exists precisely so a row can be created and returned immediately while the
+work happens elsewhere. A task queue (Celery, RQ, django-q) would take the
+`Search` id, and the detail page would poll or subscribe until the status
+flips. The current synchronous `ingest_url` then becomes the body of the task.
+
+## Listing which images failed, and why
+
+`Search` records how many images were found, skipped, deduplicated and cut off
+by the cap, which is enough for the gallery to explain itself. What it does not
+record is *which* URLs failed and for what reason — that only reaches the log.
+
+A `SkippedImage` table (search, source_url, reason, detail) would let a detail
+view list them. It was left out on purpose: the counters answer the question a
+user actually asks, and a separate table can be added later without changing
+what `search.images` means to templates already written against it.
+
+## SVG and other vector formats
+
+On the Wikipedia test page, 7 of 59 images were SVG and all were skipped:
+`ImageField` requires a raster image Pillow can open. Supporting them means
+either a separate model backed by a plain `FileField` — with sanitization,
+since SVG can carry script and would be served from our own origin — or
+rasterizing at ingest with something like `cairosvg`.
+
+## Race on asset creation
+
+`ImageAsset.objects.filter(sha256=digest).first()` followed by a create is
+check-then-act. Two ingests of the same image running at once will both miss
+and both insert, and one will fail the `sha256` unique constraint. Today
+nothing runs concurrently so it cannot happen, but it becomes reachable the
+moment downloads are parallelized or a second worker starts. `get_or_create`,
+or an explicit `INSERT ... ON CONFLICT DO NOTHING`, closes it.
+
+## Smaller items
+
+- The `robots.txt` cache is an `lru_cache` with no expiry, so a long-running
+  process never notices a change. Fine for one-shot ingests, wrong for a
+  persistent worker.
+- SSRF protection resolves the hostname and then lets `requests` resolve it
+  again when connecting, leaving a DNS-rebinding window. Closing it properly
+  means pinning the validated IP for the connection.
+- `MAX_IMAGES`, the byte caps and the timeouts are module constants; they
+  belong in settings so they can be tuned per environment.

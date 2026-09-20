@@ -1,7 +1,16 @@
 import os
 from django.contrib.admin import TabularInline
+from django.core.files.storage import FileSystemStorage
 from django.db import models
 from django.db.models import UniqueConstraint
+
+# Assets are named after their own sha256, so a name collision means the path
+# already holds byte-identical content. Django's default storage renames on
+# collision (foo.jpg -> foo_a1b2c3.jpg) to avoid clobbering an unrelated
+# upload; here that stores a redundant second copy and breaks the invariant
+# that a file's name IS its hash. Overwriting is always safe when the name is
+# derived from the content.
+asset_storage = FileSystemStorage(allow_overwrite=True)
 
 class Search(models.Model):
     class Status(models.TextChoices):
@@ -19,11 +28,44 @@ class Search(models.Model):
     error_message = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
+    # Counts of what happened to the images on the page, so a template can
+    # explain a short gallery instead of silently showing fewer images than
+    # the page has. Together with images.count() these partition images_found:
+    #
+    #     found = stored + skipped + duplicate + over_cap
+    #
+    # "stored" is deliberately not a column — it is images.count(), and a
+    # denormalised copy could only ever disagree with the rows themselves.
+    images_found = models.PositiveIntegerField(
+        default=0,
+        help_text="Image URLs found in the page, before the MAX_IMAGES cap.",
+    )
+    images_skipped = models.PositiveIntegerField(
+        default=0,
+        help_text="Attempted but unusable: download failed, or not a decodable image.",
+    )
+    images_duplicate = models.PositiveIntegerField(
+        default=0,
+        help_text="Byte-identical to another image on the same page, so stored once.",
+    )
+
     class Meta:
         ordering = ["-created_at"]
 
     def __str__(self):
         return f"{self.url} - {self.status}"
+
+    @property
+    def images_stored(self) -> int:
+        """How many images this search can actually display."""
+        return self.images.count()
+
+    @property
+    def images_over_cap(self) -> int:
+        """Found but never attempted, because MAX_IMAGES cut the list short."""
+        return self.images_found - (
+            self.images_stored + self.images_skipped + self.images_duplicate
+        )
 
 
 def get_asset_upload_path(instance, filename):
@@ -45,6 +87,7 @@ class ImageAsset(models.Model):
     # Leverages Pillow for implicit image validation and auto-populating dimensions
     file = models.ImageField(
         upload_to=get_asset_upload_path,
+        storage=asset_storage,
         width_field="width",
         height_field="height"
     )

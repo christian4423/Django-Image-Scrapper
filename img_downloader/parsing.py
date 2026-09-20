@@ -7,6 +7,20 @@ from bs4 import BeautifulSoup, Tag
 _SRCSET_DESCRIPTOR = re.compile(r"^(\d+(?:\.\d+)?)([wx])$")
 
 
+def extract_title(html_content: str) -> str:
+    """Extract the title from one image's source document.
+
+    Call this once for each fetched image/source page when the result should
+    be associated with individual images; the title is document-level data.
+    """
+    if not html_content:
+        return ""
+
+    soup = BeautifulSoup(html_content, "html.parser")
+    title = soup.title
+    return title.get_text(strip=True) if title else ""
+
+
 def extract_absolute_images(html_content: str, base_url: str) -> list[str]:
     """
     Extract unique absolute http/https image URLs from an HTML document.
