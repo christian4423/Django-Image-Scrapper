@@ -6,11 +6,15 @@ hands `fetching` a session that answers from a dictionary of URLs, and a DNS
 lookup that returns whatever the test says, so every case — a 404, a redirect
 loop, a link-local address, a connection reset — is reproducible and offline.
 """
+import shutil
+import tempfile
 import time
 from io import BytesIO
+from pathlib import Path
 from unittest import mock
 
 import requests
+from django.test import override_settings
 from PIL import Image
 from requests.structures import CaseInsensitiveDict
 
@@ -114,6 +118,25 @@ class FakeNetworkMixin:
         patcher = mock.patch.object(target, attribute, replacement)
         patcher.start()
         self.addCleanup(patcher.stop)
+
+
+class TemporaryMediaMixin:
+    """
+    Points MEDIA_ROOT at a scratch directory for the length of one test.
+
+    Anything that stores an ImageAsset writes real bytes to disk, and the
+    project's own media/ directory is not the place for them. `self.media_root`
+    is a Path, so a test can also assert about what was — or was not — written.
+    """
+
+    def setUp(self):
+        super().setUp()
+        media_root = tempfile.mkdtemp(prefix="img-downloader-tests-")
+        self.addCleanup(shutil.rmtree, media_root, ignore_errors=True)
+        overridden = override_settings(MEDIA_ROOT=media_root)
+        overridden.enable()
+        self.addCleanup(overridden.disable)
+        self.media_root = Path(media_root)
 
 
 def robots(body=b"User-agent: *\nAllow: /\n", **kwargs):

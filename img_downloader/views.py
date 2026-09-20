@@ -13,6 +13,7 @@ it would stay a hand-written function either way. One paradigm across four
 views reads better than two.
 """
 from django.core.paginator import Paginator
+from django.conf import settings
 from django.db.models import Count
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
@@ -22,12 +23,9 @@ from .forms import SearchForm
 from .ingest import ingest_url
 from .models import Search
 
-# How many past searches the landing page shows before "see all".
-RECENT_SEARCHES = 5
 
-# Rows per page on the history list.
-HISTORY_PAGE_SIZE = 20
-
+HISTORY_PAGE_SIZE = getattr(settings, "HISTORY_PAGE_SIZE", 20)
+HISTORY_RECENT_SEARCHES = getattr(settings, "HISTORY_RECENT_SEARCHES", 5)
 
 def index(request):
     """The landing page: an empty form and a few recent searches."""
@@ -81,7 +79,10 @@ def detail(request, pk):
 
 def history(request):
     """Every search, newest first, in pages."""
-    page = Paginator(_searches_with_counts(), HISTORY_PAGE_SIZE).get_page(
+    page = Paginator(
+        _searches_with_counts().order_by("-created_at", "-pk"),
+        HISTORY_PAGE_SIZE,
+    ).get_page(
         # get_page, not page: it takes whatever is in the query string —
         # missing, "abc", "9999" — and returns a real page instead of raising.
         request.GET.get("page")
@@ -93,7 +94,7 @@ def _index_context(form):
     """Context for the landing page, which `create` also re-renders on error."""
     return {
         "form": form,
-        "recent_searches": _searches_with_counts()[:RECENT_SEARCHES],
+        "recent_searches": _searches_with_counts().order_by("-created_at", "-pk")[:HISTORY_RECENT_SEARCHES],
     }
 
 

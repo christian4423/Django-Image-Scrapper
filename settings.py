@@ -63,3 +63,5 @@ USE_I18N = True
 USE_TZ = True
 STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+HISTORY_RECENT_SEARCHES = 5
+HISTORY_PAGE_SIZE = 1

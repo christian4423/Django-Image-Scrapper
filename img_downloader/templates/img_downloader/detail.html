@@ -4,17 +4,67 @@
 {% endblock %}
 
 {% block content %}
-<h2>Search Details</h2>
-<p>Title: {{ search.page_title }}</p>
-<p>Status: {{ search.status }}</p>
-<p>Date: {{ search.created_at|date:"M j, Y" }}</p>
-<p>Stored: {{ search.stored_count }}</p>
-{% if search.stored_count > 0 %}
-    <p>Images are available for this search.</p>
-    {% for image in search.image_asset %}
-        <img src="{{ image.url }}">
-    {% endfor %}
+<div class="search-details-container row align-items-start">
+    <div class="col">
+        <h2>Search Details</h2>
+        <p>Title: <a href="{{ search.url }}">{{ search.page_title|default:search.url }}</a></p>
+        <p>Status: {{ search.get_status_display }}</p>
+        <p>Date: {{ search.created_at|date:"M j, Y" }}</p>
+    </div>
+</div>
+{% if search.error_message %}
+<div class="error-message-container row">
+    <div>
+        <h3>Error Message:</h3>
+        <p class="alert alert-danger">{{ search.error_message }}</p>
+    </div>
+</div>
+{% else %}
+<div class="search-images-container row">
+    <div class="col">
+    <table>
+        <tr>
+            <th scope="col">Found</th>
+            <th scope="col">Total</th>
+            <th scope="col">New</th>
+            <th scope="col">Duplicate</th>
+            <th scope="col">Skipped</th>
+            <th scope="col">Overcap</th>
+        </tr>
+        <tr>
+            <td>{{ search.images_found }}</td>
+            <td>{{ search.images_stored }}</td>
+            <td>{{ search.images_newly_downloaded }}</td>
+            <td>{{ search.images_reused }}</td>
+            <td>{{ search.images_skipped }}</td>
+            <td>{{ search.images_over_cap }}</td>
+        </tr>
+    </table>
+    </div>
+</div>
+    {# Not a sixth column: reuse subdivides Stored rather than sitting beside it. #}
+    {% if search.images_reused %}
+    <br>
+    <div class="reused-images-info row">
+        <div class="col">
+        <p class="alert alert-info">
+            {{ search.images_reused }} of the {{ search.images_stored }} stored
+            image{{ search.images_stored|pluralize }} were already held from an earlier
+            search, so only {{ search.images_newly_downloaded }} had to be downloaded.
+        </p>
+        </div>
+    </div>
+    {% endif %}
+    {% if search.images_stored %}
+    <div class="image-grid-container row">
+        <p>Images are available for this search.</p>
+        <div class="image-list" style="display: flex; flex-wrap: wrap;">
+        {% for image in search.images.all %}
+            <div style="margin: 10px; width: 200px;"><a href="{{image.source_url}}"><img alt="Image {{image.position}} of {{ search.images_stored }}" style="max-width:100%; height: auto;" src="{{ image.asset.file.url }}"></a></div>
+        {% endfor %}
+        </div>
+    </div>
+    {% endif %}
 {% endif %}
-
 <p><a href="{% url 'img_downloader:index' %}">Back to Home</a></p>
 {% endblock %}

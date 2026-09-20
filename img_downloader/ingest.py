@@ -96,22 +96,28 @@ def ingest_url(url: str) -> Search:
     failed_downloads = len(attempted_urls) - len(downloads)
 
     with transaction.atomic():
-        assets = _save_assets(downloads, search.pk)
+        assets, newly_stored_ids = _save_assets(downloads, search.pk)
         unreadable = len(downloads) - len(assets)
         duplicates = _link_to_search(search, assets)
+
+        # One row is linked per distinct asset, so these ids are exactly the
+        # images this search can show; the ones we did not have to create are
+        # the ones an earlier search had already paid for.
+        stored_ids = {asset.pk for _source_url, asset in assets}
 
         # images_found is the total before the cap, so images_over_cap can
         # tell "the page only had 12" from "we stopped looking at 60".
         search.images_found = len(found_urls)
         search.images_skipped = failed_downloads + unreadable
         search.images_duplicate = duplicates
+        search.images_reused = len(stored_ids - newly_stored_ids)
         search.status = Search.Status.COMPLETE
         search.save()
 
-    if search.images_skipped or search.images_duplicate:
+    if search.images_skipped or search.images_duplicate or search.images_reused:
         logger.info(
-            "search %s: %s found -> %s stored, %s skipped, %s duplicate, %s over cap",
-            search.pk, search.images_found, search.images_stored,
+            "search %s: %s found -> %s stored (%s reused), %s skipped, %s duplicate, %s over cap",
+            search.pk, search.images_found, search.images_stored, search.images_reused,
             search.images_skipped, search.images_duplicate, search.images_over_cap,
         )
     return search
@@ -152,15 +158,22 @@ def _download_all(image_urls: list[str], search_pk: int) -> list[DownloadedImage
 
 def _save_assets(
     downloads: list[DownloadedImage], search_pk: int
-) -> list[tuple[str, ImageAsset]]:
+) -> tuple[list[tuple[str, ImageAsset]], set[int]]:
     """
     Turn each download into a stored ImageAsset, in order.
 
     Returns (source_url, asset) pairs rather than bare assets, because the
     same asset can be reached from several URLs and we want to remember which
     one we saw it at. Images Pillow cannot read are left out.
+
+    Also returns the ids of the assets this call had to create. Everything
+    else was already in storage, which is what images_reused counts — and it
+    has to be tracked here rather than inferred later, because the *second*
+    copy of a repeated image on this same page also finds an existing asset
+    without that meaning we saved any work.
     """
     saved = []
+    newly_stored_ids = set()
     for download in downloads:
         # Assets are content-addressed, so if we already hold these exact
         # bytes — from this page or from a search months ago — reuse the row
@@ -175,9 +188,10 @@ def _save_assets(
                     "search %s: undecodable %s (%s)", search_pk, download.source_url, error
                 )
                 continue
+            newly_stored_ids.add(asset.pk)
 
         saved.append((download.source_url, asset))
-    return saved
+    return saved, newly_stored_ids
 
 
 def _store_new_asset(download: DownloadedImage) -> ImageAsset:

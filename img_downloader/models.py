@@ -34,11 +34,20 @@ class Search(models.Model):
     #
     #     found = stored + skipped + duplicate + over_cap
     #
+    # images_reused is NOT part of that sum. It subdivides stored, answering a
+    # different question — how much work this search avoided:
+    #
+    #     stored = reused + newly_downloaded
+    #
     # "stored" is deliberately not a column — it is images.count(), and a
     # denormalised copy could only ever disagree with the rows themselves.
     images_found = models.PositiveIntegerField(
         default=0,
-        help_text="Image URLs found in the page, before the MAX_IMAGES cap.",
+        help_text=(
+            "Distinct image URLs found in the page, before the MAX_IMAGES cap. "
+            "A page referencing one URL several times is counted once: parsing "
+            "collapses repeats before ingest sees them."
+        ),
     )
     images_skipped = models.PositiveIntegerField(
         default=0,
@@ -47,6 +56,13 @@ class Search(models.Model):
     images_duplicate = models.PositiveIntegerField(
         default=0,
         help_text="Byte-identical to another image on the same page, so stored once.",
+    )
+    images_reused = models.PositiveIntegerField(
+        default=0,
+        help_text=(
+            "Stored images we already held from an earlier search, so their "
+            "bytes were never downloaded again."
+        ),
     )
 
     class Meta:
@@ -59,6 +75,11 @@ class Search(models.Model):
     def images_stored(self) -> int:
         """How many images this search can actually display."""
         return self.images.count()
+
+    @property
+    def images_newly_downloaded(self) -> int:
+        """Stored images whose bytes we did not already have."""
+        return self.images_stored - self.images_reused
 
     @property
     def images_over_cap(self) -> int:

@@ -119,7 +119,7 @@ uv pip install Django, psycopg
 python manage.py test
 ```
 
-43 tests, about half a second, and no network access — `img_downloader/tests/fakes.py`
+77 tests, under a second, and no network access — `img_downloader/tests/fakes.py`
 stands in for the internet, so a 404, a redirect loop, a link-local address or a
 dropped connection are all reproducible rather than dependent on some real site
 behaving that way today.
@@ -129,6 +129,14 @@ tests drive the real `fetch_page` and `download_image` over that fake network
 instead of stubbing them, so the seam between the two modules is covered: a 404
 on one image has to travel from `requests`, through error translation, to a
 skipped image on a search that still completes.
+
+The `views` tests drive the same stack through Django's test client, so routing,
+the form and the templates all run. Two of them assert query *counts* rather
+than HTML: `detail` and `history` are each written in a particular shape to
+avoid an N+1 — `prefetch_related` on one, a `Count` annotation on the other —
+and an assertion about the rendered page would pass just as happily against the
+slow version. Both are pinned at two different row counts, so a count that grows
+with the data fails the build.
 
 ***
 

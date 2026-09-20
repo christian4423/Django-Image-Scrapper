@@ -1,0 +1,22 @@
+<table>
+    <thead>
+    <tr>
+        <th scope="col">Title</th>
+        <th scope="col">Status</th>
+        <th scope="col">Date</th>
+        <th scope="col">Stored</th>
+        <th scope="col">View</th>
+    </tr>
+    </thead>
+    <tbody> 
+    {% for search in searches %}
+    <tr>
+        <td><a href="{{ search.url }}">{{ search.page_title|truncatechars:50|default:search.url }}</a></td>
+        <td>{{ search.get_status_display }}</td>
+        <td>{{ search.created_at|date:"M j, Y" }}</td>
+        <td>{{ search.stored_count }}</td>
+        <td><a href="{% url 'img_downloader:detail' search.pk %}">Details</a></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>

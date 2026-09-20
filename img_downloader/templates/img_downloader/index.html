@@ -1,43 +1,35 @@
 {% extends "img_downloader/base.html" %}
 {% block title %}
-    {{ block.super }} - Home
+{{ block.super }} - Home
 {% endblock %}
 
 {% block content %}
-<h2>Welcome to the Image Downloader</h2>
-<p>Use the form below to search for images.</p>
-<form action="{% url 'img_downloader:create' %}" method="post">
-    {% csrf_token %}
-    {{form.url.label_tag}} 
-    {{form.url}}
-    <input type="submit" value="Search">
-    <br>
-    {{form.url.errors}}
-</form>
-
-<hr>
-<h2>Recent Searches</h2>
-{% if recent_searches %}
-    <table>
-        <tr>
-            <th>Title</th>
-            <th>Status</th>
-            <th>Date</th>
-            <th>Stored</th>
-            <th>Actions</th>
-        </tr>
-        {% for search in recent_searches %}
-        <tr>
-            <td>{{ search.page_title|truncatechars:50 }}</td>
-            <td>{{ search.status }}</td>
-            <td>{{ search.created_at|date:"M j, Y" }}</td>
-            <td>{{ search.stored_count }}</td>
-            <td><a href="{% url 'img_downloader:detail' search.pk %}">View</a></td>
-        </tr>
-        {% endfor %}
-    </table>
-{% else %}
+<div class="image-search-container row align-items-start">
+    <div class="col">
+        <h2>Image Search</h2>
+        <p>Use the form below to search for images.</p>
+        <form class="image-search-form" action="{% url 'img_downloader:create' %}" method="post">
+            <div class="mb-3">
+                {% csrf_token %}
+                <label for="{{ form.url.id_for_label }}" class="form-label">{{ form.url.label }}</label>
+                <input type="text" id="{{ form.url.id_for_label }}" name="{{ form.url.html_name }}" class="form-control"
+                    value="{{ form.url.value|default_if_none:'' }}">
+                {{form.url.errors}}
+            </div>
+            <div class="mb-3 align-self-end d-flex justify-content-center">
+                <button type="submit" class="btn btn-primary">Search</button>
+            </div>
+        </form>
+    </div>
+</div>
+<div class="recent-searches-container row align-items-start">
+    <div class="col">
+    <h2>Recent Searches</h2>
+    {% if recent_searches %}
+    {% include "img_downloader/_search_table.html" with searches=recent_searches only %}
+    {% else %}
     <p>No recent searches available.</p>
-{% endif %}
-
+    {% endif %}
+    </div>
+</div>
 {% endblock %}

@@ -9,13 +9,10 @@ still completes.
 """
 import hashlib
 import logging
-import shutil
-import tempfile
 import time
-from pathlib import Path
 from unittest import mock
 
-from django.test import TestCase, override_settings
+from django.test import TestCase
 
 from img_downloader import ingest
 from img_downloader.fetching import FetchingError
@@ -26,6 +23,7 @@ from .fakes import (
     SVG,
     FakeNetworkMixin,
     FakeResponse,
+    TemporaryMediaMixin,
     html_page,
     png,
     png_response,
@@ -40,18 +38,11 @@ def image_url(name):
     return f"https://example.com/{name}"
 
 
-class IngestTestCase(FakeNetworkMixin, TestCase):
+class IngestTestCase(FakeNetworkMixin, TemporaryMediaMixin, TestCase):
     """Shared setup: a scratch MEDIA_ROOT, a quiet logger, and a served page."""
 
     def setUp(self):
         super().setUp()
-
-        media_root = tempfile.mkdtemp(prefix="img-downloader-tests-")
-        self.addCleanup(shutil.rmtree, media_root, ignore_errors=True)
-        overridden = override_settings(MEDIA_ROOT=media_root)
-        overridden.enable()
-        self.addCleanup(overridden.disable)
-        self.media_root = Path(media_root)
 
         # Skips are expected in most of these tests; a handler here keeps
         # logging's last-resort printer off the test output. assertLogs still
@@ -271,6 +262,12 @@ class CounterTests(IngestTestCase):
         )
         self.assertEqual(sum(parts), search.images_found, f"{parts} does not sum to found")
         self.assertTrue(all(part >= 0 for part in parts), f"negative counter in {parts}")
+        # Reuse is not a fifth peer: it subdivides stored.
+        self.assertLessEqual(search.images_reused, search.images_stored)
+        self.assertEqual(
+            search.images_stored,
+            search.images_reused + search.images_newly_downloaded,
+        )
         return parts
 
     def test_a_mixed_page(self):
@@ -325,3 +322,86 @@ class ConcurrencyTests(IngestTestCase):
         survivors = [url for url in images if url not in dead]
         self.assertEqual(self.stored_urls(search), survivors, "document order was lost")
         self.assertEqual(self.positions(search), list(range(len(survivors))))
+
+
+class ReuseTests(IngestTestCase):
+    """images_reused: how much work an earlier search already paid for."""
+
+    def test_a_first_search_reuses_nothing(self):
+        self.serve_page({image_url("a.png"): png_response(60), image_url("b.png"): png_response(61)})
+
+        search = ingest_url(PAGE)
+
+        self.assertEqual(search.images_stored, 2)
+        self.assertEqual(search.images_reused, 0)
+        self.assertEqual(search.images_newly_downloaded, 2)
+
+    def test_a_later_search_reuses_what_is_already_stored(self):
+        """The Cat-then-Dog case: overlapping pages cost fewer new assets."""
+        self.serve_page({image_url("shared.png"): png_response(62), image_url("cat.png"): png_response(63)})
+        first = ingest_url(PAGE)
+
+        self.serve_page({image_url("shared.png"): png_response(62), image_url("dog.png"): png_response(64)})
+        second = ingest_url(PAGE)
+
+        self.assertEqual(first.images_reused, 0)
+        self.assertEqual(second.images_stored, 2)
+        self.assertEqual(second.images_reused, 1, "the shared image should not be re-downloaded")
+        self.assertEqual(second.images_newly_downloaded, 1)
+        self.assertEqual(ImageAsset.objects.count(), 3, "shared bytes stored once")
+
+    def test_a_repeat_within_one_page_is_a_duplicate_not_a_reuse(self):
+        """
+        The second copy of an image on the same page also finds an existing
+        asset — but this search created it moments earlier, so no work was
+        saved. It belongs in images_duplicate, not images_reused.
+        """
+        self.serve_page({
+            image_url("logo.png"): png_response(65),
+            image_url("logo-again.png"): png_response(65),
+        })
+
+        search = ingest_url(PAGE)
+
+        self.assertEqual(search.images_stored, 1)
+        self.assertEqual(search.images_duplicate, 1)
+        self.assertEqual(search.images_reused, 0, "counted its own new asset as reused")
+        self.assertEqual(search.images_newly_downloaded, 1)
+
+    def test_reuse_and_duplication_together(self):
+        """Both at once, on a page that also repeats the image it reuses."""
+        self.serve_page({image_url("shared.png"): png_response(66)})
+        ingest_url(PAGE)
+
+        self.serve_page({
+            image_url("shared.png"): png_response(66),
+            image_url("shared-copy.png"): png_response(66),
+            image_url("fresh.png"): png_response(67),
+        })
+        second = ingest_url(PAGE)
+
+        self.assertEqual(second.images_found, 3)
+        self.assertEqual(second.images_stored, 2)
+        self.assertEqual(second.images_duplicate, 1)
+        self.assertEqual(second.images_reused, 1)
+        self.assertEqual(second.images_newly_downloaded, 1)
+
+    def test_a_reused_asset_is_not_written_to_storage_again(self):
+        body = png(68)
+        digest = hashlib.sha256(body).hexdigest()
+        response = lambda: FakeResponse(200, {"Content-Type": "image/png"}, body)
+
+        self.serve_page({image_url("a.png"): response()})
+        ingest_url(PAGE)
+        written_once = sorted(str(p) for p in self.media_root.rglob("*") if p.is_file())
+
+        self.serve_page({image_url("b.png"): response()})
+        second = ingest_url(PAGE)
+
+        self.assertEqual(second.images_reused, 1)
+        self.assertEqual(
+            sorted(str(p) for p in self.media_root.rglob("*") if p.is_file()),
+            written_once,
+            "storage was touched for an image we already had",
+        )
+        self.assertEqual(ImageAsset.objects.get(sha256=digest).appearances.count(), 2)
