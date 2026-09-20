@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Image Downloader{% endblock %}</title>
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <header>
+        <h1>Image Downloader</h1>
+        <nav>
+            <ul>
+                <li><a href="{% url 'img_downloader:index' %}">Home</a></li>
+                <li><a href="{% url 'img_downloader:history' %}">History</a></li>
+            </ul>
+        </nav>
+    </header>
+    {% block content %}{% endblock %}
+</body>
+</html>
