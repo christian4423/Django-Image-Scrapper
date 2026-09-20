@@ -1,24 +1,45 @@
+"""
+Turning a URL the user typed into a Search row with its images attached.
+
+The whole flow, in order:
+
+    create the Search (PENDING)
+      -> fetch the page
+      -> find every image URL in it
+      -> download those images, in parallel
+      -> save each one as an ImageAsset and link it to the Search
+      -> mark the Search COMPLETE
+
+Only the page fetch can fail the whole search. An individual image that will
+not download, or whose bytes turn out not to be an image, is counted and
+skipped — a page is still worth keeping when a few of its images are missing.
+"""
 import hashlib
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from PIL import Image, UnidentifiedImageError
 from io import BytesIO
+from typing import NamedTuple
 
-from .models import Search, ImageAsset, SearchImage
 from django.core.files.base import ContentFile
 from django.db import transaction
-from .fetching import fetch_page, download_image, FetchingError
+from PIL import Image, UnidentifiedImageError
+
+from .fetching import FetchingError, download_image, fetch_page
+from .models import ImageAsset, Search, SearchImage
 from .parsing import extract_absolute_images, extract_title
 
 logger = logging.getLogger(__name__)
 
-MAX_IMAGES = 60  # Maximum number of images to download per page
+# How many images we are willing to take from one page.
+MAX_IMAGES = 60
 
-# Images are fetched in parallel: the work is almost entirely network wait, so
-# threads are the right tool and the GIL is not in the way. Kept deliberately
-# small — a page's images usually come from one or two origins, so the pool
-# size doubles as the politeness limit for those hosts.
+# Downloading is almost entirely network wait, so threads are the right tool
+# and the GIL is not in the way. Kept deliberately small: a page's images
+# usually come from one or two origins, so the pool size doubles as the
+# politeness limit for those hosts.
 MAX_DOWNLOAD_WORKERS = 8
+
+# Pillow's format names, and the file extension we store each one under.
 FORMAT_EXTENSIONS = {
     "JPEG": "jpg",
     "PNG": "png",
@@ -28,130 +49,198 @@ FORMAT_EXTENSIONS = {
     "TIFF": "tiff",
 }
 
-# Pillow's way of saying "these bytes aren't a raster image I can handle".
-# Caught by name rather than by OSError (which UnidentifiedImageError subclasses)
-# so a genuine storage failure in asset.file.save still propagates.
+# Pillow's way of saying "these bytes are not a raster image I can handle".
+# Listed by name rather than catching OSError — which UnidentifiedImageError
+# happens to subclass — so that a genuine storage failure still propagates
+# instead of being quietly counted as a skipped image.
 UNUSABLE_IMAGE_ERRORS = (UnidentifiedImageError, Image.DecompressionBombError)
 
-"""
-create Search at PENDING → fetch_page → extract_absolute_images → cap the count → download concurrently → persist → flip to COMPLETE.
-"""
+
+class DownloadedImage(NamedTuple):
+    """One image we successfully retrieved, before it becomes an ImageAsset."""
+
+    source_url: str
+    content: bytes
+    content_type: str
+    digest: str  # sha256 hex: both the image's identity and its filename
+
+
 def ingest_url(url: str) -> Search:
     """
-    Ingest a URL into the search model.
+    Download every image on the page at `url` and record them against a Search.
 
-    A page is worth keeping even when some of its images aren't: individual
-    images that fail to download or decode are skipped and logged, and the
-    Search still completes with whatever was retrievable. Only a failure to
-    fetch the page itself marks the Search FAILED.
-
-    Args:
-        url: The URL to ingest.
-
-    Returns:
-        A Search object representing the ingested URL.
+    Returns the completed Search. Raises FetchingError if the page itself
+    could not be fetched, having first marked the Search FAILED.
     """
-    search = Search(url=url)
-    search.status = Search.Status.PENDING
-    search.page_title = ""  # Initialize page title as empty string
-    search.save()  # Save the initial PENDING state
+    # Saved straight away so the row exists — and can be shown as in-progress
+    # or failed — no matter what happens below.
+    search = Search.objects.create(url=url, status=Search.Status.PENDING)
+
     try:
-        fetched_page = fetch_page(url)
-    except FetchingError as e:
+        page = fetch_page(url)
+    except FetchingError as error:
         search.status = Search.Status.FAILED
-        search.error_message = str(e)
+        search.error_message = str(error)
         search.save()
-        raise e
-    search.page_title = extract_title(fetched_page.html)
+        raise
+
+    search.page_title = extract_title(page.html)
     search.save()
-    absolute_images = extract_absolute_images(fetched_page.html, fetched_page.url)
-    capped_images = absolute_images[:MAX_IMAGES]# Update image count with capped images
 
-    # Workers only do HTTP — no ORM calls — so there is no question of sharing a
-    # Django connection across threads. requests.Session is already thread-local
-    # in fetching.py, so each worker gets its own connection pool.
-    with ThreadPoolExecutor(max_workers=MAX_DOWNLOAD_WORKERS) as pool:
-        futures = [pool.submit(download_image, image_url) for image_url in capped_images]
+    # Resolved against the page's *final* URL, which may differ from `url` if
+    # we were redirected, so relative paths point where the browser would go.
+    found_urls = extract_absolute_images(page.html, page.url)
+    attempted_urls = found_urls[:MAX_IMAGES]
 
-    # Consuming the futures in submission order keeps results in document order,
-    # which is what SearchImage.position is derived from below.
-    downloaded_images = []
-    skipped = 0
-    duplicates = 0
-    for image_url, future in zip(capped_images, futures):
-        try:
-            downloaded = future.result()
-        except FetchingError as e:
-            # A dead link, a timeout or an oversized file is a fact about one
-            # image, not about the page. Drop it and keep going.
-            logger.warning("search %s: skipping %s (%s)", search.pk, image_url, e)
-            skipped += 1
-            continue
-        content = downloaded.content
-        digest = hashlib.sha256(content).hexdigest()
-        downloaded_images.append((image_url, downloaded, content, digest))
+    downloads = _download_all(attempted_urls, search.pk)
+    failed_downloads = len(attempted_urls) - len(downloads)
 
     with transaction.atomic():
-        search_images = []
-        seen_asset_ids = set()
-        for source_url, downloaded, content, digest in downloaded_images:
-            asset = ImageAsset.objects.filter(sha256=digest).first()
-            if asset is None:
-                try:
-                    # Header-only read, so it rejects SVG and other non-raster
-                    # content that got past the content-type check, and trips
-                    # Pillow's decompression-bomb guard, before we touch storage.
-                    with Image.open(BytesIO(content)) as pillow_image:
-                        image_format = pillow_image.format
-                except UNUSABLE_IMAGE_ERRORS as e:
-                    logger.warning("search %s: undecodable %s (%s)", search.pk, source_url, e)
-                    skipped += 1
-                    continue
+        assets = _save_assets(downloads, search.pk)
+        unreadable = len(downloads) - len(assets)
+        duplicates = _link_to_search(search, assets)
 
-                extension = (
-                    FORMAT_EXTENSIONS.get(image_format, image_format.lower())
-                    if image_format is not None
-                    else "bin"
-                )
-        
-                filename = f"{digest}.{extension}"
-                asset = ImageAsset(sha256=digest, content_type=downloaded.content_type, byte_size=len(content))
-                asset.file.save(filename, ContentFile(content), save=False)
-                asset.save()
-
-            # The same bytes can appear at several URLs on one page (e.g. a logo
-            # in the header and the footer). unique_search_asset allows only one
-            # row per (search, asset), so keep the first URL we saw it at.
-            if asset.pk in seen_asset_ids:
-                duplicates += 1
-                continue
-            seen_asset_ids.add(asset.pk)
-
-            search_images.append(
-                SearchImage(
-                    search=search,
-                    asset=asset,
-                    source_url=source_url,
-                    # Contiguous over stored rows, so Meta.ordering gives back
-                    # document order with no gaps where duplicates were dropped.
-                    position=len(search_images),
-                )
-            )
-
-        SearchImage.objects.bulk_create(search_images)
-
-        # images_found is the uncapped total, so images_over_cap can tell the
-        # difference between "the page only had 12" and "we stopped at 60".
-        search.images_found = len(absolute_images)
-        search.images_skipped = skipped
+        # images_found is the total before the cap, so images_over_cap can
+        # tell "the page only had 12" from "we stopped looking at 60".
+        search.images_found = len(found_urls)
+        search.images_skipped = failed_downloads + unreadable
         search.images_duplicate = duplicates
         search.status = Search.Status.COMPLETE
         search.save()
 
-    if skipped or duplicates:
+    if search.images_skipped or search.images_duplicate:
         logger.info(
             "search %s: %s found -> %s stored, %s skipped, %s duplicate, %s over cap",
-            search.pk, len(absolute_images), len(search_images), skipped, duplicates,
-            len(absolute_images) - len(capped_images),
+            search.pk, search.images_found, search.images_stored,
+            search.images_skipped, search.images_duplicate, search.images_over_cap,
         )
     return search
+
+
+def _download_all(image_urls: list[str], search_pk: int) -> list[DownloadedImage]:
+    """
+    Download every URL at once, dropping the ones that fail.
+
+    The result keeps the order of `image_urls` minus the failures, which is
+    what SearchImage.position is built from further down.
+    """
+    # These workers only make HTTP requests — they never touch the ORM — so no
+    # Django database connection is ever shared between threads.
+    with ThreadPoolExecutor(max_workers=MAX_DOWNLOAD_WORKERS) as pool:
+        futures = [pool.submit(download_image, image_url) for image_url in image_urls]
+
+    downloads = []
+    for image_url, future in zip(image_urls, futures):
+        try:
+            fetched = future.result()
+        except FetchingError as error:
+            # A dead link, a timeout or an oversized file is a fact about one
+            # image, not about the page. Note it and carry on.
+            logger.warning("search %s: skipping %s (%s)", search_pk, image_url, error)
+            continue
+
+        downloads.append(
+            DownloadedImage(
+                source_url=image_url,
+                content=fetched.content,
+                content_type=fetched.content_type,
+                digest=hashlib.sha256(fetched.content).hexdigest(),
+            )
+        )
+    return downloads
+
+
+def _save_assets(
+    downloads: list[DownloadedImage], search_pk: int
+) -> list[tuple[str, ImageAsset]]:
+    """
+    Turn each download into a stored ImageAsset, in order.
+
+    Returns (source_url, asset) pairs rather than bare assets, because the
+    same asset can be reached from several URLs and we want to remember which
+    one we saw it at. Images Pillow cannot read are left out.
+    """
+    saved = []
+    for download in downloads:
+        # Assets are content-addressed, so if we already hold these exact
+        # bytes — from this page or from a search months ago — reuse the row
+        # instead of storing a second copy.
+        asset = ImageAsset.objects.filter(sha256=download.digest).first()
+
+        if asset is None:
+            try:
+                asset = _store_new_asset(download)
+            except UNUSABLE_IMAGE_ERRORS as error:
+                logger.warning(
+                    "search %s: undecodable %s (%s)", search_pk, download.source_url, error
+                )
+                continue
+
+        saved.append((download.source_url, asset))
+    return saved
+
+
+def _store_new_asset(download: DownloadedImage) -> ImageAsset:
+    """
+    Write one image's bytes to storage and return the saved ImageAsset.
+
+    Raises one of UNUSABLE_IMAGE_ERRORS if the bytes are not a readable image,
+    which happens before anything is written.
+    """
+    # Opening reads the header only. That is enough to reject SVG and other
+    # non-raster content that got past the Content-Type check, and to trip
+    # Pillow's decompression-bomb guard, without decoding the whole image.
+    with Image.open(BytesIO(download.content)) as image:
+        image_format = image.format
+
+    asset = ImageAsset(
+        sha256=download.digest,
+        content_type=download.content_type,
+        byte_size=len(download.content),
+    )
+    filename = f"{download.digest}.{_extension_for(image_format)}"
+    asset.file.save(filename, ContentFile(download.content), save=False)
+    asset.save()
+    return asset
+
+
+def _extension_for(image_format: str | None) -> str:
+    """The extension to store a Pillow format under, e.g. "JPEG" -> "jpg"."""
+    if image_format is None:
+        return "bin"
+    return FORMAT_EXTENSIONS.get(image_format, image_format.lower())
+
+
+def _link_to_search(search: Search, assets: list[tuple[str, ImageAsset]]) -> int:
+    """
+    Create the SearchImage rows joining this search to the images it found.
+
+    Returns how many were dropped as duplicates. The same bytes often appear
+    at several URLs on one page — a logo in the header and again in the footer
+    — and unique_search_asset allows only one row per (search, asset), so the
+    first URL we saw it at wins.
+    """
+    rows: list[SearchImage] = []
+    seen_asset_ids = set()
+    duplicates = 0
+
+    for source_url, asset in assets:
+        if asset.pk in seen_asset_ids:
+            duplicates += 1
+            continue
+        seen_asset_ids.add(asset.pk)
+
+        rows.append(
+            SearchImage(
+                search=search,
+                asset=asset,
+                source_url=source_url,
+                # Numbered across stored rows only, so Meta.ordering gives
+                # back document order with no gaps where something was
+                # skipped or deduplicated.
+                position=len(rows),
+            )
+        )
+
+    SearchImage.objects.bulk_create(rows)
+    return duplicates
