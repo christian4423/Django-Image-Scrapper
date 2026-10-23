@@ -94,7 +94,7 @@ def ingest_url(url: str) -> Search:
 
     downloads = _download_all(attempted_urls, search.pk)
     failed_downloads = len(attempted_urls) - len(downloads)
-
+    # Save all successfully downloaded images to the database and link them to the search.
     with transaction.atomic():
         assets, newly_stored_ids = _save_assets(downloads, search.pk)
         unreadable = len(downloads) - len(assets)

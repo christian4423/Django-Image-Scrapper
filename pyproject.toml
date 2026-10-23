@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 authors = [
-    { name = "Christian Matsoukis", email = "cmatsoukis@gmail.com" }
+    { name = "Christian Matsoukis" }
 ]
 requires-python = ">=3.12"
 dependencies = ["django", "psycopg[binary]", "requests", "beautifulsoup4", "Pillow"]

@@ -58,9 +58,9 @@
     {% if search.images_stored %}
     <div class="image-grid-container row">
         <p>Images are available for this search.</p>
-        <div class="image-list" style="display: flex; flex-wrap: wrap;">
+        <div class="image-list row row-cols-2 row-cols-md-3 row-cols-lg-4 g-3">
         {% for image in search.images.all %}
-            <div style="margin: 10px; width: 200px;"><a href="{{image.source_url}}"><img alt="Image {{image.position}} of {{ search.images_stored }}" style="max-width:100%; height: auto;" src="{{ image.asset.file.url }}"></a></div>
+            <div class="col"><a href="{{image.source_url}}"><img class="img-fluid" alt="Image {{image.position}} of {{ search.images_stored }}" src="{{ image.asset.file.url }}"></a></div>
         {% endfor %}
         </div>
     </div>

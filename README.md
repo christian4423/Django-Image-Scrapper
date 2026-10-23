@@ -1,85 +1,115 @@
-# Software Developer Interview Task
+# Django Image Scraper
 
-Hello Christian,
+A Django and PostgreSQL web app that takes a URL, downloads every image on that
+page, shows them in a gallery and keeps a browsable history of past searches.
 
-I hope you’re doing well and we’re looking forward to talking with you next week.
+Built by **Christian Matsoukis** as a take-home exercise for a software
+developer interview. The brief asked for four things:
 
-For the presentation portion of your interview we’d like you to complete and present on the following task.
+1. Let the user enter a URL.
+2. Download and display all of the images found at that URL.
+3. Save the searched URL and references to the downloaded files in a relational database.
+4. Provide a navigable list of past searches that redisplays their images.
 
-## The Problem
+All four work. Most of the effort went past the brief, into safe fetching,
+de-duplicating storage and a fast, network-free test suite. The panel was told
+to look at code structure and decisions more than the UI, so this README
+covers those too.
 
-Create a web application capable of downloading and displaying all of the images found at a URL. In the provided repository, please create a relational database-backed web application capable of:
+# Screenshots
 
-1. Allowing the User to enter a URL.
-2. Downloading and displaying all of the images found at the URL back to the user.
-3. Save the searched URL and references to the downloaded files to a database
-4. Generate a navigable list of past searches that when selected will redisplay the previously downloaded files.
+### Home: enter a URL and see recent searches
 
-## Tools and Guidance
+![Home page with URL form and recent searches](docs/screenshots/index.png)
 
-For this task we’re making use of Git version control. While experience with Git is certainly a value add, assessing your familiarity with that software is not the purpose of the exercise. Instead, if used throughout the process, Git will allow us to see your work.
+### Search details: per-search counts and the downloaded gallery
 
-You should use Python to complete this task. In the absence of a strong personal preference, [Django](https://www.djangoproject.com/) would be a great choice.
+![Search detail page showing counts and image gallery](docs/screenshots/detail.png)
 
-Functionality is more important than aesthetics. While an attractive front end is appreciated, we are most interested in how you approach the problem and structure your application to address the features outlined above.
+### History: paginated list of past searches
 
-Your audience is a group of web software developers. We will be looking at the application source code, HTML, and stylesheets. Be prepared to:
+![Search history page](docs/screenshots/history.png)
 
-* demonstrate how your application operates
+***
 
-* tell us what choices you made while constructing it
+# Highlights
 
-* describe what ideas you may have for enhancing your application were you to continue development on it
+**Safe outbound fetching** ([fetching.py](img_downloader/fetching.py))
+- Before any request, the hostname is resolved and rejected if it points to a
+  private, loopback, link-local or reserved address. This is SSRF protection: a
+  user can't make the server fetch from internal hosts.
+- Redirects are followed by hand (`allow_redirects=False`, at most 5), so every
+  hop is checked again rather than only the first URL.
+- Every request has a connect timeout, a read timeout and a byte cap: 2 MB for
+  HTML, 10 MB per image, 500 KB for `robots.txt`.
+- The app checks `robots.txt` and sends its own `User-Agent`.
+- SVG is refused on purpose to prevent stored XSS. The reasoning is below
+  under [SVG and other vector formats](#svg-and-other-vector-formats).
 
-* walk through your code
+**Thorough image discovery** ([parsing.py](img_downloader/parsing.py))
+- Finds `og:image` meta tags, `<img>` tags and `<picture><source>` tags in
+  document order.
+- Parses `srcset` by hand and keeps the highest-resolution candidate (`w` or
+  `x` descriptors).
+- Skips `<source>` tags inside `<video>` and `<audio>`, and makes every URL
+  absolute against the page.
 
-Plan for 20-25 minutes to present your solution, with the remaining time reserved for Q\&A with the panel.
+**Content-addressed storage** ([models.py](img_downloader/models.py), [ingest.py](img_downloader/ingest.py))
+- `Search` → `SearchImage` → `ImageAsset`. Each asset is keyed by the SHA-256
+  of its bytes, and that hash also names the file on disk. An image that
+  appears on many pages, or many times on one page, is stored once and linked
+  from each search.
+- Every downloaded file is decoded with Pillow. Files that aren't really images
+  and decompression bombs are both rejected.
+- Each search records how many images were found, stored, newly downloaded,
+  duplicated, skipped and cut off by the cap, so the gallery explains why it
+  shows what it shows.
+- Images download in parallel on a bounded thread pool. Database writes happen
+  in a single transaction.
 
-AI use is acceptable for this exercise. Regardless of its use, it is important to fully understand and describe everything about the application and to be able to speak to how it may be improved both functionally and technically. If AI is used, be prepared to speak to how it was used.
+**Query-conscious views** ([views.py](img_downloader/views.py))
+- The detail page uses `prefetch_related` and the history page uses a `Count`
+  annotation, so neither page runs one query per row (the N+1 problem). Tests
+  pin both query counts.
 
-## Getting started
+## Tech stack
 
-1. Open a terminal
-2. Navigate to a directory in which you’d like to store your work and checkout the project with the line below.
-3. git clone <https://github.com/academic-innovation/christian-matsoukis-developer-interview.git>
+Python 3.12 · Django 6 · PostgreSQL (psycopg 3) · Requests · Beautiful Soup ·
+Pillow · Bootstrap · uv
 
-# Setting up project:
-
-## Database
-
-For MacOS in
-
-make a file called .pg\_service.conf and .my\_pgpass in \~
-
-\~/.pg\_service.conf contents:
+## Project layout
 
 ```
-[img_downloader]
-host=localhost
-user=postgres
-dbname=img_downloader
-port=5432
-```
-
-\~/.my\_pgpass contents:
-
-```
-localhost:5432:NAME:USER:PASSWORD
-```
-
-run `chmod 600` on each
-
-```
-chmod 600 ~/.my_pgpass
-chmod 600 ~/.pg_service.conf
+img_downloader/
+  fetching.py   HTTP layer: SSRF guard, redirects, robots.txt, size/time limits
+  parsing.py    HTML → page title and absolute image URLs
+  ingest.py     Orchestrates a search: fetch, download, hash, store, link
+  models.py     Search, SearchImage, ImageAsset
+  views.py      index / create / detail / history
+  forms.py      URL form
+  templates/    Bootstrap templates
+  tests/        fetching, ingest and view tests, plus a fake network (fakes.py)
 ```
 
 ***
 
-In the root of this project, make sure settings.py has
+# Running it locally
+
+Requires Python 3.12+, [uv](https://docs.astral.sh/uv/) and a local PostgreSQL server.
+
+```bash
+git clone https://github.com/christian4423/Django-Image-Scrapper.git
+cd Django-Image-Scrapper
+uv sync
+source .venv/bin/activate
+```
+
+## Database
+
+`settings.py` reads its connection details from a PostgreSQL service file
+instead of storing credentials in the repo:
 
 ```python
-...
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
@@ -89,27 +119,40 @@ DATABASES = {
         },
     }
 }
-...
 ```
 
-Make database
+Create `~/.pg_service.conf`:
 
 ```
-psql -U username -d postgres
-CREATE DATABASE img_downloader;
-\l
+[img_downloader]
+host=localhost
+user=postgres
+dbname=img_downloader
+port=5432
 ```
 
-## Virtual Environment
-
-In project root
+Create `~/.my_pgpass` in the format `host:port:database:user:password`:
 
 ```
-uv init
-uv venv
-source .venv/bin/activate
-uv pip install Django, psycopg
+localhost:5432:img_downloader:postgres:YOUR_PASSWORD
 ```
+
+Lock both files down, then create the database:
+
+```bash
+chmod 600 ~/.my_pgpass ~/.pg_service.conf
+psql -U postgres -c "CREATE DATABASE img_downloader;"
+```
+
+## Run
+
+```bash
+python manage.py migrate
+python manage.py runserver
+```
+
+Then open <http://127.0.0.1:8000/> and try a page such as
+`https://en.wikipedia.org/wiki/Cat`.
 
 ***
 
@@ -220,11 +263,16 @@ exactly the vulnerability above.
 ## Race on asset creation
 
 `ImageAsset.objects.filter(sha256=digest).first()` followed by a create is
-check-then-act. Two ingests of the same image running at once will both miss
-and both insert, and one will fail the `sha256` unique constraint. Today
-nothing runs concurrently so it cannot happen, but it becomes reachable the
-moment downloads are parallelized or a second worker starts. `get_or_create`,
-or an explicit `INSERT ... ON CONFLICT DO NOTHING`, closes it.
+check-then-act. Downloads already run in parallel, but this step does not: once
+they finish, `_save_assets` looks up and stores each image one at a time, so a
+single search cannot race with itself.
+
+Two searches can. If two pages that share an image are ingested at the same
+moment, both lookups miss, both insert, and one fails the `sha256` unique
+constraint, rolling back that search's whole transaction. That is reachable
+whenever requests are served concurrently, as they would be by multiple
+threads, multiple workers, or a task queue. `get_or_create`, or an explicit
+`INSERT ... ON CONFLICT DO NOTHING`, closes it.
 
 ## Smaller items
 
